@@ -49,7 +49,19 @@ const unsigned long neutralDelay = 500; // Time (ms) in neutral before allowing 
 
 // Motion velocity and decay parameters
 float baseVelocity = 0.0;               // Virtual vehicle speed (-100 to 100)
+float targetVelocity = 0.0;    
 float velocityDecayRate = 20.0;         // % per second, adjustable via channel 4
+
+// Ramp & Boost
+bool ramping = false;
+float rampTargetVelocity = 0.0;
+float rampStep = 0.0;
+uint8_t rampStepCount = 0;
+
+const uint8_t RAMP_STEPS = 6;
+const uint8_t RAMP_INTERVAL_MS = 15;
+const float START_BOOST_PWM = 120;
+unsigned long lastRampTime = 0;
 
 // Loop timing
 const unsigned long loopInterval = 10;  // Loop update interval in ms (100Hz)
@@ -175,17 +187,15 @@ void loop() {
       readyForReverse = false;
       neutralStartTime = 0;
 
-      // Smooth deceleration
-      if (baseVelocity > throttlePercent)
-        baseVelocity = decayTowardsZero(baseVelocity, velocityDecayRate, deltaTime);    
-      else
-        baseVelocity = throttlePercent;
+      targetVelocity = throttlePercent;
+
 
     } else if (throttlePercent >= -deadzone && throttlePercent <= deadzone) {
       // Neutral zone
       reverseMode = false;
+      ramping = false;
       throttlePercent = 0;
-      baseVelocity = decayTowardsZero(baseVelocity, velocityDecayRate, deltaTime);
+      targetVelocity = 0;
 
       // Check if neutral long enough to allow reverse
       bool isNeutral = abs(baseVelocity) < 1.0;
@@ -198,13 +208,58 @@ void loop() {
       }
 
     } else {
-      // Requesting reverse
+      // Braking
       if (!readyForReverse) {
         reverseMode = false;
+        ramping = false;
         baseVelocity = 0;
-      } else {
+        targetVelocity = 0;
+      } 
+      // Reverse
+      else {
         reverseMode = true;
-        baseVelocity = throttlePercent;
+        targetVelocity = throttlePercent;
+      }
+    }
+
+
+    // === COASTING LOGIC ===
+
+    if (abs(baseVelocity) > abs(targetVelocity) && !ramping) {
+      int direction = baseVelocity/abs(baseVelocity);
+      baseVelocity = direction * max(decayTowardsZero(abs(baseVelocity), velocityDecayRate, deltaTime), abs(targetVelocity));    
+    }
+
+
+    // === RAMPING LOGIC ===
+
+    if (baseVelocity == 0 && abs(targetVelocity) > 0 && !ramping) {
+      int direction = targetVelocity/abs(targetVelocity);
+
+      // Start from stop: apply boost + prepare ramp
+      escLeft.writeMicroseconds(pwmMid + START_BOOST_PWM * direction);
+      escRight.writeMicroseconds(pwmMid + START_BOOST_PWM * direction);
+      delayMicroseconds(5000); // short boost (~5 ms)
+
+      ramping = true;
+      rampTargetVelocity = targetVelocity;
+      rampStepCount = 0;
+      rampStep = rampTargetVelocity / RAMP_STEPS;
+      baseVelocity = 0;
+      lastRampTime = now;
+    }
+
+    if (ramping) {
+      if (abs(targetVelocity) < abs(rampTargetVelocity)) {
+        ramping = false; //cancel ramping if targetVelocity suddently fall bellow ramping target velocity
+       } else if (now - lastRampTime >= RAMP_INTERVAL_MS) {
+        baseVelocity += rampStep;
+        rampStepCount++;
+        lastRampTime = now;
+        if (rampStepCount >= RAMP_STEPS) {
+          baseVelocity = rampTargetVelocity;
+          ramping = false;
+        }
       }
     }
 
