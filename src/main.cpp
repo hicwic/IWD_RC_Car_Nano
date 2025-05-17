@@ -95,7 +95,7 @@ int percentToPWM(float percent) {
 float decayTowardsZero(float val, float ratePerSecond, float deltaTime) {
   float step = ratePerSecond * deltaTime;
   if (val > step) return val - step;
-  if (val < -step) return val + step;
+
   return 0;
 }
 
@@ -233,26 +233,42 @@ void loop() {
 
     // === RAMPING LOGIC ===
 
-    if (baseVelocity == 0 && abs(targetVelocity) > 0 && !ramping) {
+    if (abs(targetVelocity) > 0 && !ramping) {
       int direction = targetVelocity/abs(targetVelocity);
 
-      // Start from stop: apply boost + prepare ramp
-      escLeft.writeMicroseconds(pwmMid + START_BOOST_PWM * direction);
-      escRight.writeMicroseconds(pwmMid + START_BOOST_PWM * direction);
-      delayMicroseconds(5000); // short boost (~5 ms)
+      // if we start from 0, we ramp
+      if (baseVelocity == 0) {
+        // Start from stop: apply boost + prepare ramp
+        escLeft.writeMicroseconds(pwmMid + START_BOOST_PWM * direction);
+        escRight.writeMicroseconds(pwmMid + START_BOOST_PWM * direction);
+        delayMicroseconds(5000); // short boost (~5 ms)
 
-      ramping = true;
-      rampTargetVelocity = targetVelocity;
-      rampStepCount = 0;
-      rampStep = rampTargetVelocity / RAMP_STEPS;
-      baseVelocity = 0;
-      lastRampTime = now;
+        ramping = true;
+        rampTargetVelocity = targetVelocity;
+        rampStepCount = 0;
+        rampStep = rampTargetVelocity / RAMP_STEPS;
+        baseVelocity = 0;
+        lastRampTime = now;
+      }
+      // else we just ajust baseVelocity to targetVelocity
+      else {
+        baseVelocity = targetVelocity;
+      }
     }
 
     if (ramping) {
       if (abs(targetVelocity) < abs(rampTargetVelocity)) {
         ramping = false; //cancel ramping if targetVelocity suddently fall bellow ramping target velocity
-       } else if (now - lastRampTime >= RAMP_INTERVAL_MS) {
+       } 
+       else if (now - lastRampTime >= RAMP_INTERVAL_MS) {
+
+        //if new targetVelocity > rampTargetVelocity update ramping steps 
+        if (abs(targetVelocity) > abs(rampTargetVelocity)) {
+          int direction = targetVelocity/abs(targetVelocity);
+          rampStep = direction * (abs(targetVelocity)-abs(baseVelocity)) / (RAMP_STEPS-rampStepCount);
+          rampTargetVelocity = targetVelocity;
+        }
+
         baseVelocity += rampStep;
         rampStepCount++;
         lastRampTime = now;
@@ -265,10 +281,16 @@ void loop() {
 
     // === DIFFERENTIAL LOGIC ===
 
-    float diff = dirPercent * mixPercent / 100.0;
+    float leftVelocity = baseVelocity;
+    float rightVelocity = baseVelocity;
 
-    float leftVelocity  = baseVelocity - mixSign * diff;
-    float rightVelocity = baseVelocity + mixSign * diff;
+    // if ramping we do not apply mix diff to let motors ramp corectly
+    if (!ramping) {
+      float diff = dirPercent * mixPercent / 100.0;
+
+      leftVelocity  = baseVelocity - mixSign * diff;
+      rightVelocity = baseVelocity + mixSign * diff;
+    }
 
     // Enforce throttle floor for forward motion
     if (baseVelocity > 0) {
@@ -280,8 +302,8 @@ void loop() {
       rightVelocity = 0;
     }
     else {
-      leftVelocity  = constrain(leftVelocity,  -100, 0);
-      rightVelocity = constrain(rightVelocity, -100, 0);
+      leftVelocity  = constrain(leftVelocity,  -100, -minThrottleFwd);
+      rightVelocity = constrain(rightVelocity, -100, -minThrottleFwd);
     }
 
     // Convert to PWM and send to ESCs
@@ -304,7 +326,9 @@ void loop() {
     DEBUG_PRINT(" | PWM L: "); DEBUG_PRINT(pwmLeft);
     DEBUG_PRINT(" | PWM R: "); DEBUG_PRINT(pwmRight);  
     DEBUG_PRINT(" | PWM THR: "); DEBUG_PRINT(throttlePWM);  
-    DEBUG_PRINT(" | DeltaTime: "); DEBUG_PRINTLN(deltaTime);    
+    DEBUG_PRINT(" | Ramping: "); DEBUG_PRINT(ramping ? "Yes" : "No");
+    DEBUG_PRINT(" | DeltaTime: "); DEBUG_PRINTF(deltaTime, 4);        
+    DEBUG_PRINTLN("");    
 
     // === LED BLINKING FEEDBACK ===
 
